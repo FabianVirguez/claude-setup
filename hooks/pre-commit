@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Rechaza commits que contengan datos sensibles.
+#
+# Los patrones específicos (UUIDs de organización, dominios corporativos) NO
+# viven en este archivo: se leen de `patterns.local`, que está dentro de .git/
+# y por lo tanto nunca se versiona. Así el hook puede vivir en un repo público
+# sin que el repo nombre lo que está protegiendo.
+#
+# Para saltearlo en un caso puntual: git commit --no-verify
+set -u
+
+GITDIR=$(git rev-parse --git-dir)
+LOCAL_PATTERNS="$GITDIR/hooks/patterns.local"
+
+R=$'\033[0m'; BOLD=$'\033[1m'; ALERT=$'\033[38;5;201m'; DIM=$'\033[2m'
+
+# Patrones genéricos, sin falsos positivos razonables.
+# Formato por línea: <etiqueta>|<regex extendida>
+# Va en una función y no en $(...) porque un heredoc con comillas dentro de una
+# sustitución de comandos rompe el parser de bash 3.2 (el de macOS).
+builtin_patterns() {
+  cat <<'PAT'
+org uuid con valor|forceLoginOrgUUID"?[[:space:]]*[:=][[:space:]]*"?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}
+token de Anthropic|sk-ant-[A-Za-z0-9_-]{10,}
+token de GitHub|gh[pousr]_[A-Za-z0-9]{20,}
+clave privada|-----BEGIN [A-Z ]*PRIVATE KEY-----
+PAT
+}
+
+# Solo las líneas AÑADIDAS de lo que está staged.
+# Ambos greps con -E: en las BRE de macOS, `\+` es un operador de repetición y
+# `^\+\+\+` falla con "repetition-operator operand invalid".
+ADDED=$(git diff --cached -U0 --diff-filter=ACM | grep -E '^\+' | grep -Ev '^\+\+\+' || true)
+[ -z "$ADDED" ] && exit 0
+
+found=0
+
+report() {
+  if [ "$found" = 0 ]; then
+    printf '\n%s%s Commit bloqueado: datos sensibles en los cambios%s\n\n' "$ALERT" "$BOLD" "$R"
+    found=1
+  fi
+  printf '  %s%s%s\n' "$BOLD" "$1" "$R"
+  printf '%s\n' "$2" | cut -c1-120 | sed 's/^/     /'
+  printf '\n'
+}
+
+scan() {
+  local label=$1 rx=$2 hits
+  hits=$(printf '%s\n' "$ADDED" | grep -Ei -- "$rx" | head -3) || true
+  [ -n "$hits" ] && report "$label" "$hits"
+  return 0
+}
+
+# El `< <(...)` evita el subshell de un pipe, que perdería la variable `found`.
+while IFS='|' read -r label rx; do
+  [ -z "${label:-}" ] && continue
+  [ -z "${rx:-}" ] && continue
+  case "$label" in "#"*) continue ;; esac
+  scan "$label" "$rx"
+done < <(builtin_patterns)
+
+if [ -f "$LOCAL_PATTERNS" ]; then
+  while IFS='|' read -r label rx; do
+    [ -z "${label:-}" ] && continue
+    [ -z "${rx:-}" ] && continue
+    case "$label" in "#"*) continue ;; esac
+    scan "$label" "$rx"
+  done < "$LOCAL_PATTERNS"
+fi
+
+if [ "$found" = 1 ]; then
+  printf '%sQuitá esos valores antes de commitear.%s\n' "$DIM" "$R"
+  printf '%sSi es un falso positivo:  git commit --no-verify%s\n' "$DIM" "$R"
+  printf '%sPatrones propios: %s%s\n\n' "$DIM" "${LOCAL_PATTERNS/#$HOME/~}" "$R"
+  exit 1
+fi
+
+exit 0

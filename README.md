@@ -14,8 +14,21 @@ git clone <este-repo> ~/Documents/claude-setup
 ~/Documents/claude-setup/install.sh
 ```
 
-El instalador pregunta qué querés y es idempotente: correrlo de nuevo actualiza en vez de
-duplicar. Hace backup de `~/.zshrc` antes de tocarlo.
+El instalador abre un menú donde elegís qué instalar. Es idempotente: correrlo de nuevo
+actualiza en vez de duplicar, y hace backup de `~/.zshrc` antes de tocarlo.
+
+```
+    1) [x] Perfiles separados         directorio aislado + atajos de shell
+    2) [x] Statusline                 cuenta activa, consumo y costo
+    3) [ ] Fusible de organización    rechaza cuentas de otra org
+    4) [x] Skill de mantenimiento     ajustes conversacionales
+    5) [x] Hook de pre-commit         bloquea datos sensibles al commitear
+
+   Enter para aceptar, o los números a cambiar (ej: 2 5):
+```
+
+Escribís los números de lo que querés cambiar y Enter para confirmar. Podés instalar los
+perfiles sin la statusline, o solo el hook, o cualquier combinación.
 
 ```bash
 ./install.sh           # interactivo
@@ -38,6 +51,7 @@ CS_MAIN_NAME=work CS_PROFILE_NAME=personal ./install.sh --all
 | atajos de shell | `claude-main`, `claude-<nombre>`, `claude-whoami` |
 | fusible de org | opcional: fija el perfil principal a una organización |
 | skill | `claude-profiles`, para mantener todo esto conversacionalmente |
+| hook de pre-commit | bloquea commits con datos sensibles, en este repo |
 
 El bloque del shell va entre marcadores `# >>> claude-setup >>>`, así que el instalador lo
 reemplaza limpio en cada corrida.
@@ -97,6 +111,37 @@ Dos cosas que conviene saber:
   quiere decir que el login está corriendo contra el perfil que tiene el fusible, no contra
   el que creías. `./install.sh --unpin` lo saca temporalmente.
 
+## Hook de pre-commit
+
+Rechaza commits que contengan tokens, claves privadas, org UUIDs o direcciones de tu
+dominio corporativo.
+
+Los patrones específicos **no viven en el repo**: el instalador los detecta de tu sesión de
+Claude Code y los escribe en `.git/hooks/patterns.local`, que está dentro de `.git/` y por
+lo tanto nunca se versiona. Así el hook puede vivir en un repo público sin que el repo
+nombre lo que está protegiendo.
+
+Formato de `patterns.local`, una regla por línea:
+
+```
+etiqueta|regex extendida
+uuid de tu organización|00000000-1111-2222-3333-444444444444
+dominio de email corporativo|@tuempresa\.com
+```
+
+Los patrones genéricos (tokens de Anthropic y GitHub, claves privadas, `forceLoginOrgUUID`
+con un valor) vienen en el hook. Distinguen mencionar una clave de filtrar su valor, así que
+documentarla no dispara el bloqueo.
+
+Para saltearlo en un caso puntual: `git commit --no-verify`.
+
+Para usarlo en otro repo:
+
+```bash
+cp hooks/pre-commit /ruta/al/repo/.git/hooks/
+cp .git/hooks/patterns.local /ruta/al/repo/.git/hooks/
+```
+
 ## Requisitos
 
 - macOS o Linux, `bash`, `git`
@@ -106,7 +151,8 @@ Dos cosas que conviene saber:
 ## Estructura
 
 ```
-install.sh                      instalador idempotente
+install.sh                      instalador idempotente, con menú
 lib/statusline.sh               script de la statusline
+hooks/pre-commit                bloquea datos sensibles al commitear
 skills/claude-profiles/         skill de mantenimiento
 ```

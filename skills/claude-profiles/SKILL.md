@@ -127,10 +127,36 @@ jq '.statusLine = {"type":"command","command":"~/.claude-statusline.sh","padding
 Después agregar la función al bloque `# >>> claude-setup >>>` del `~/.zshrc`, y entrar con
 `CLAUDE_CONFIG_DIR="$HOME/.claude-<nombre>" claude` para hacer el `/login` inicial.
 
+## Hook de pre-commit
+
+Vive en `hooks/pre-commit` del repo y se instala en `.git/hooks/pre-commit`. Rechaza
+commits con tokens, claves privadas, org UUIDs o emails del dominio corporativo.
+
+Los patrones específicos están en `.git/hooks/patterns.local` — dentro de `.git/`, nunca
+versionado, para que el repo pueda ser público sin nombrar lo que protege. Una regla por
+línea, `etiqueta|regex extendida`.
+
+```bash
+cat "$(git rev-parse --git-dir)/hooks/patterns.local"   # ver los patrones activos
+git commit --no-verify                                   # saltearlo una vez
+```
+
+Al agregar patrones, distinguir **mencionar** una clave de **filtrar** su valor: un patrón
+como `forceLoginOrgUUID` a secas bloquearía la propia documentación. Exigir el valor
+(`forceLoginOrgUUID"?[[:space:]]*[:=][[:space:]]*"?[0-9a-fA-F]{8}-`).
+
+Dos trampas de bash en macOS que ya costaron un bug cada una:
+
+- En las BRE de macOS `\+` es un operador de repetición: `grep -v '^\+\+\+'` falla con
+  *repetition-operator operand invalid*. Usar `grep -Ev`.
+- Un heredoc con comillas dentro de `$(...)` rompe el parser de bash 3.2. Por eso los
+  patrones están en una función y no en una sustitución de comandos.
+
 ## Reinstalar en otra máquina
 
 ```bash
 git clone <repo> ~/Documents/claude-setup && ~/Documents/claude-setup/install.sh
 ```
 
-El instalador es idempotente: correrlo de nuevo actualiza en lugar de duplicar.
+El instalador abre un menú para elegir qué componentes instalar (perfiles, statusline,
+fusible, skill, hook). Es idempotente: correrlo de nuevo actualiza en lugar de duplicar.
