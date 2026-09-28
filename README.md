@@ -23,8 +23,9 @@ actualiza en vez de duplicar, y hace backup de `~/.zshrc` antes de tocarlo.
     3) [ ] Fusible de organización    rechaza cuentas de otra org
     4) [x] Skill de mantenimiento     ajustes conversacionales
     5) [x] Hook de pre-commit         bloquea datos sensibles al commitear
+    6) [x] Auto-reparación            repara la config al abrir una sesión
 
-   Enter para aceptar, o los números a cambiar (ej: 2 5):
+   Enter para aceptar, o los números a cambiar (ej: 2 6):
 ```
 
 Escribís los números de lo que querés cambiar y Enter para confirmar. Podés instalar los
@@ -52,6 +53,7 @@ CS_MAIN_NAME=work CS_PROFILE_NAME=personal ./install.sh --all
 | fusible de org | opcional: fija el perfil principal a una organización |
 | skill | `claude-profiles`, para mantener todo esto conversacionalmente |
 | hook de pre-commit | bloquea commits con datos sensibles, en este repo |
+| auto-reparación | hook `SessionStart` que repone lo que falte |
 
 El bloque del shell va entre marcadores `# >>> claude-setup >>>`, así que el instalador lo
 reemplaza limpio en cada corrida.
@@ -142,6 +144,28 @@ cp hooks/pre-commit /ruta/al/repo/.git/hooks/
 cp .git/hooks/patterns.local /ruta/al/repo/.git/hooks/
 ```
 
+## Auto-reparación
+
+Tus settings, skills y statusline viven en el **perfil** (`~/.claude/`), no en la sesión:
+ya se aplican a todas las sesiones, nuevas y existentes. No hay nada que instalar por sesión.
+
+Lo que esto agrega es reponer lo que falte. Un hook `SessionStart` en cada perfil corre
+`lib/ensure.sh`, que compara contra `~/.claude-setup.json` (escrito en la instalación) y
+repone la statusline, su enlace en settings, el skill, el directorio del perfil secundario
+y el hook de pre-commit.
+
+Solo **añade lo ausente**: nunca pisa ni quita lo que ya está, incluido el hook que lo
+invoca y cualquier otro hook tuyo. Si todo está en su lugar no imprime nada; cuando repara
+algo, lo dice en un mensaje de sistema.
+
+```bash
+lib/ensure.sh --check    # informa qué falta, sin tocar nada
+lib/ensure.sh            # repara
+```
+
+Para el bloque del `~/.zshrc` solo avisa: reescribirlo necesita los nombres de perfil, y
+una sesión de Claude no puede recargar tu shell de todos modos. Ahí corré `install.sh`.
+
 ## Requisitos
 
 - macOS o Linux, `bash`, `git`
@@ -154,5 +178,6 @@ cp .git/hooks/patterns.local /ruta/al/repo/.git/hooks/
 install.sh                      instalador idempotente, con menú
 lib/statusline.sh               script de la statusline
 hooks/pre-commit                bloquea datos sensibles al commitear
+lib/ensure.sh                   verifica y repara la config del perfil
 skills/claude-profiles/         skill de mantenimiento
 ```

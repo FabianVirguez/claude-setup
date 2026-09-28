@@ -152,6 +152,25 @@ Dos trampas de bash en macOS que ya costaron un bug cada una:
 - Un heredoc con comillas dentro de `$(...)` rompe el parser de bash 3.2. Por eso los
   patrones están en una función y no en una sustitución de comandos.
 
+## Auto-reparación
+
+Un hook `SessionStart` en cada perfil corre `lib/ensure.sh`, que lee el estado deseado de
+`~/.claude-setup.json` y repone lo que falte (statusline, su enlace en settings, skill,
+directorio del perfil secundario, hook de pre-commit).
+
+```bash
+~/Documents/claude-setup/lib/ensure.sh --check   # qué falta, sin tocar nada
+jq . ~/.claude-setup.json                        # qué debería existir
+jq '.hooks.SessionStart' ~/.claude/settings.json # el hook está puesto?
+```
+
+Invariante a respetar al tocarlo: **solo añade lo ausente**. Nunca quita ni pisa, porque el
+hook vive en el mismo `settings.json` que repara — y porque el usuario puede tener otros
+hooks. El merge se hace con jq comprobando antes si el comando ya está.
+
+No confundir con el problema que NO existe: settings, skills y statusline son por perfil y
+ya se aplican a todas las sesiones. Nada se instala por sesión.
+
 ## Reinstalar en otra máquina
 
 ```bash

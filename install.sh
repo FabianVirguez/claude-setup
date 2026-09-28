@@ -11,6 +11,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO=0
 case "${1:-}" in
   --all) AUTO=1 ;;
+  --ensure|--check)
+    # Verifica y repara la config del perfil activo. Lo usa el hook SessionStart.
+    exec "$HERE/lib/ensure.sh" ${1:+$([ "$1" = "--check" ] && echo --check)} ;;
   --unpin)
     command -v jq >/dev/null || { echo "falta jq"; exit 1; }
     f="$HOME/.claude/settings.json"
@@ -57,6 +60,11 @@ sel2=1  # statusline
 sel3=0  # fusible de organización
 sel4=1  # skill
 sel5=1  # hook de pre-commit
+sel6=1  # auto-reparación al iniciar una sesión
+
+# El fusible arranca marcado solo si ya está puesto, para que el menú refleje
+# el estado real y una corrida con --all no lo reporte como ausente.
+jq -e 'has("forceLoginOrgUUID")' "$HOME/.claude/settings.json" >/dev/null 2>&1 && sel3=1
 
 mark() { [ "$1" = 1 ] && printf 'x' || printf ' '; }
 
@@ -76,13 +84,14 @@ render_menu() {
   row 3 $sel3 "Fusible de organización" "rechaza cuentas de otra org"
   row 4 $sel4 "Skill de mantenimiento"  "ajustes conversacionales"
   row 5 $sel5 "Hook de pre-commit"      "bloquea datos sensibles al commitear"
+  row 6 $sel6 "Auto-reparación"         "repara la config al abrir una sesión"
   printf '\n'
 }
 
 toggle() {
   case "$1" in
     1) sel1=$((1-sel1)) ;; 2) sel2=$((1-sel2)) ;; 3) sel3=$((1-sel3)) ;;
-    4) sel4=$((1-sel4)) ;; 5) sel5=$((1-sel5)) ;;
+    4) sel4=$((1-sel4)) ;; 5) sel5=$((1-sel5)) ;; 6) sel6=$((1-sel6)) ;;
     *) return 1 ;;
   esac
 }
@@ -91,7 +100,7 @@ if [ "$AUTO" = 0 ]; then
   step "Qué querés instalar"
   while :; do
     render_menu
-    printf '   %sEnter para aceptar, o los números a cambiar (ej: 2 5):%s ' "$DIM" "$R"
+    printf '   %sEnter para aceptar, o los números a cambiar (ej: 2 6):%s ' "$DIM" "$R"
     read -r line < /dev/tty || line=""
     [ -z "$line" ] && break
     for n in $line; do toggle "$n" || warn "opción inválida: $n"; done
@@ -291,6 +300,42 @@ if [ "$sel5" = 1 ]; then
     n=$(grep -cv '^#' "$PL" || true)
     done_ "$n patrones propios en .git/hooks/patterns.local ${DIM}(fuera de git)${R}"
   fi
+fi
+
+# -------------------------------------------------------- estado + auto-reparación
+# El estado le dice a lib/ensure.sh qué debería existir en esta máquina.
+STATE="$HOME/.claude-setup.json"
+bool() { [ "$1" = 1 ] && echo true || echo false; }
+jq -n \
+  --arg repo "$HERE" --arg main "$MAIN_NAME" --arg prof "$PROFILE_NAME" \
+  --arg dir "$PROFILE_DIR" --arg rc "${RC:-}" \
+  --argjson profiles "$(bool $sel1)" --argjson statusline "$(bool $sel2)" \
+  --argjson pin "$(bool $sel3)" --argjson skill "$(bool $sel4)" \
+  --argjson hook "$(bool $sel5)" --argjson autofix "$(bool $sel6)" \
+  '{repo:$repo, main_name:$main, profile_name:$prof, profile_dir:$dir, shell_rc:$rc,
+    components:{profiles:$profiles, statusline:$statusline, pin:$pin,
+                skill:$skill, hook:$hook, autofix:$autofix}}' > "$STATE"
+
+if [ "$sel6" = 1 ]; then
+  step "Auto-reparación"
+  say "   Al abrir una sesión, verifica la config del perfil y repara lo que falte."
+  say "   ${DIM}Solo añade lo ausente: nunca pisa lo que ya está.${R}"
+  say ""
+  ENSURE_CMD="$HERE/lib/ensure.sh"
+  for p in "$HOME/.claude" "$PROFILE_DIR"; do
+    [ -n "$p" ] && [ -d "$p" ] || continue
+    f="$p/settings.json"
+    [ -f "$f" ] || echo '{}' > "$f"
+    # merge idempotente: respeta los hooks que ya existan y no se duplica
+    tmp="$f.tmp.$$"
+    jq --arg cmd "$ENSURE_CMD" '
+      .hooks //= {} | .hooks.SessionStart //= [] |
+      if ([.hooks.SessionStart[]?.hooks[]? | select(.command == $cmd)] | length) > 0
+      then .
+      else .hooks.SessionStart += [{hooks:[{type:"command", command:$cmd, timeout:10}]}]
+      end' "$f" > "$tmp" && mv "$tmp" "$f" || rm -f "$tmp"
+    done_ "hook SessionStart en ${p/#$HOME/$TILDE}/settings.json"
+  done
 fi
 
 # ----------------------------------------------------------------------- cierre
