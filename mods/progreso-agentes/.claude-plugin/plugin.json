@@ -1,0 +1,1 @@
+{ "name": "progreso-agentes", "version": "0.1.0", "description": "Panel con el progreso de los agentes en segundo plano: tiempo vs estimado, pasos, última acción e hitos", "types": "./types/index.d.ts" }

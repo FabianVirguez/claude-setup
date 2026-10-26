@@ -1,0 +1,11 @@
+{
+  "name": "claude-setup",
+  "owner": { "name": "Fabian Virguez" },
+  "plugins": [
+    {
+      "name": "progreso-agentes",
+      "source": "./mods/progreso-agentes",
+      "description": "Barra de progreso para los agentes en segundo plano: tiempo vs estimado, pasos, hitos, aviso y sonido al terminar"
+    }
+  ]
+}
