@@ -103,3 +103,12 @@ test('reconoce tests y despliegues de otras herramientas', async ($, on) => {
   expect((await ui.findAll({ type: 'Text', text: /^[✓…]$/ })).map(x => x.text)).toEqual(['✓', '…', '…', '✓'])
   await ui.unmount()
 })
+
+import { clasificar } from '../hooks/register'
+
+test('clasifica el encargo: corto, normal o largo', () => {
+  expect(clasificar('Revisa si el archivo X existe y dime qué contiene.')).toBe('corta')
+  expect(clasificar('Cambia el texto, corre los tests y despliega. ' + 'detalle '.repeat(300))).toBe('normal')
+  expect(clasificar('Haz un audit del juez y una prueba real. ' + 'detalle '.repeat(300))).toBe('larga')
+  expect(clasificar('detalle '.repeat(700))).toBe('larga')
+})

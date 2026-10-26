@@ -9,7 +9,7 @@ Barra de progreso para los agentes en segundo plano de Claude Code. / A progress
 **Qué muestra / What it shows** (una línea por agente sobre el prompt / one line per agent above the prompt):
 
 - Un ícono según la tarea (🚀 deploy, 🧪 tests, 🩹 fix, 🔍 search…) y un indicador animado mientras trabaja.
-- Tiempo transcurrido contra un estimado que aprende solo (mediana de los últimos 10 agentes; 15 min al principio). La barra avanza por tiempo, no por trabajo: verde a tiempo, ámbar cerca del estimado, coral con ⚠️ si se pasa.
+- Tiempo transcurrido contra un estimado según el tamaño del encargo (corta ~5 min, normal ~12, larga ~30 al principio), que después aprende de lo que tardaron las últimas 10 tareas de cada tamaño. La barra avanza por tiempo, no por trabajo: verde a tiempo, ámbar cerca del estimado, coral con ⚠️ si se pasa.
 - Pasos, y los hitos como recorrido: `tests ✓ › commit ✓ › push ⟳ › deploy …`, detectados por los comandos que corre (pytest, jest, npm test, go test…; git commit/push; railway, vercel, fly, kubectl, helm, terraform…).
 - `⏸️ sin actividad` si pasa más de 3 min sin usar herramientas (no cuenta un comando largo en curso).
 - Al terminar: un sonido (macOS), una notificación y un toast.

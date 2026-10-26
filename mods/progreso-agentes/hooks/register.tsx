@@ -1,14 +1,15 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Hito, Tarea } from '../types'
+import type { Clase, Hito, Tarea } from '../types'
 
 const PANEL = 'progreso-agentes'
 const TITULO = 'Progreso de agentes'
 const tareas = atom({ plugin: 'progreso-agentes', key: 'tareas' } as const, {})
 const tick = atom({ plugin: 'progreso-agentes', key: 'tick' } as const, 0)
 
-const ESTIMADO_POR_DEFECTO = 15 * 60_000
+// Estimado inicial por tamaño de tarea, hasta que haya duraciones propias de esa clase
+const ESTIMADO_INICIAL: Record<Clase, number> = { corta: 5 * 60_000, normal: 12 * 60_000, larga: 30 * 60_000 }
 const OCULTAR_TERMINADAS_MS = 15 * 60_000
 const ANCHO_BARRA = 20
 const TEXTO = '#87CEEB'
@@ -118,9 +119,18 @@ export function recorrido(t: Tarea): { nombre: string; signo: string; color: str
 
 const textoRecorrido = (t: Tarea) => recorrido(t).map(r => `${r.nombre} ${r.signo}`).join(' › ')
 
-async function estimado($: EngineInterface): Promise<number> {
-  const durs = ((await $.store.get('duraciones')) as number[] | undefined) ?? []
-  if (!durs.length) return ESTIMADO_POR_DEFECTO
+// Qué tan grande es el encargo: sobre todo su largo; investigar o probar en real lo sube un escalón
+const PROFUNDO = /prueba real|real check|audit|diagnos|investig|refactor|rediseñ|redesign|migra/i
+export function clasificar(encargo: string): Clase {
+  const palabras = encargo.split(/\s+/).filter(Boolean).length
+  const nivel = (palabras > 550 ? 2 : palabras > 250 ? 1 : 0) + (PROFUNDO.test(encargo) ? 1 : 0)
+  return nivel === 0 ? 'corta' : nivel === 1 ? 'normal' : 'larga'
+}
+
+// Mediana de lo que tardaron las últimas 10 de la misma clase; si no hay, el inicial
+async function estimado($: EngineInterface, clase: Clase = 'normal'): Promise<number> {
+  const durs = ((await $.store.get(`duraciones:${clase}`)) as number[] | undefined) ?? []
+  if (!durs.length) return ESTIMADO_INICIAL[clase]
   const orden = [...durs].sort((a, b) => a - b)
   return orden[Math.floor(orden.length / 2)]!
 }
@@ -205,7 +215,7 @@ export const register: Register = on => {
     if (r.agentId) {
       const id = r.agentId
       const ahora = await $.clock.now()
-      await update($, tareas, t => ({ ...t, [id]: nueva(id, e.description, ahora, false) }))
+      await update($, tareas, t => ({ ...t, [id]: { ...nueva(id, e.description, ahora, false), clase: clasificar(e.prompt) } }))
       void $.ui.open({ id: PANEL, title: TITULO })
       await estado($)
     }
@@ -251,8 +261,9 @@ export const register: Register = on => {
         await update($, tareas, t => ({ ...t, [id]: { ...x, fin: ahora, estado: (ok ? 'listo' : 'fallo') as Tarea['estado'] } }))
         // Solo aprende de duraciones medidas desde el arranque
         if (ok && !x.aproximado) {
-          const durs = ((await $.store.get('duraciones')) as number[] | undefined) ?? []
-          await $.store.set('duraciones', [...durs, ahora - x.inicio].slice(-10))
+          const clave = `duraciones:${x.clase ?? 'normal'}`
+          const durs = ((await $.store.get(clave)) as number[] | undefined) ?? []
+          await $.store.set(clave, [...durs, ahora - x.inicio].slice(-10))
         }
         // Aviso de la Mac y toast, para cuando no se está mirando la terminal
         const texto = `${ok ? '✅' : '❌'} ${x.descripcion} ${ok ? 'terminó' : 'falló'} en ${minutos(ahora - x.inicio)}`
@@ -273,10 +284,11 @@ export const register: Register = on => {
     if (!activas.length || e.props.hasSurvey) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const ahora = await $.clock.now()
-    const est = await estimado($)
+    const ests = Object.fromEntries(await Promise.all(activas.map(async t => [t.id, await estimado($, t.clase)] as const)))
     return (
       <Box flexDirection="column">
         {activas.map(t => {
+          const est = ests[t.id]!
           // El texto en celeste; la barra y su % verde, ámbar o coral según el tiempo
           const [antes, mini, pct, despues] = partes(t, ahora, est)
           const color = colorBarra(ahora - t.inicio, est)
@@ -301,16 +313,17 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     await read($, tick)
     const ahora = await $.clock.now()
-    const est = await estimado($)
     const lista = Object.values(await read($, tareas))
       .filter(t => t.estado === 'corriendo' || ahora - (t.fin ?? ahora) < OCULTAR_TERMINADAS_MS)
       .sort((a, b) => b.inicio - a.inicio)
 
     if (!lista.length) return <Text dimColor>No hay agentes trabajando.</Text>
+    const ests = Object.fromEntries(await Promise.all(lista.map(async t => [t.id, await estimado($, t.clase)] as const)))
 
     return (
       <Box flexDirection="column">
         {lista.map(t => {
+          const est = ests[t.id]!
           const dur = (t.fin ?? ahora) - t.inicio
           const corriendo = t.estado === 'corriendo'
           // La barra avanza con el tiempo, no con el trabajo: se frena en 95 % hasta que termina
@@ -323,7 +336,7 @@ export const register: Register = on => {
               <Text bold>{estadoIcono} {icono(t)} {t.descripcion}</Text>
               <Text>
                 ⏱️ {t.aproximado ? '≥' : ''}{minutos(dur)}
-                {corriendo ? ` (estimado ~${minutos(est)})` : ' en total'}
+                {corriendo ? ` (estimado ~${minutos(est)}, tarea ${t.clase ?? 'normal'})` : ' en total'}
               </Text>
               <Text color={tarde ? 'yellow' : corriendo ? 'cyan' : 'green'}>
                 {barra(fr)} {corriendo ? `${Math.round(fr * 100)} %` : 'listo'}
