@@ -112,3 +112,19 @@ test('clasifica el encargo: corto, normal o largo', () => {
   expect(clasificar('Haz un audit del juez y una prueba real. ' + 'detalle '.repeat(300))).toBe('larga')
   expect(clasificar('detalle '.repeat(700))).toBe('larga')
 })
+
+import { ajustar } from '../hooks/register'
+
+test('amplía el estimado según los hitos que faltan, y lo muestra', () => {
+  const base = {
+    id: 'a', descripcion: 'x', inicio: 0, aproximado: false, pasos: 1, ultima: '', estado: 'corriendo' as const,
+    ultimaActividad: 13 * 60_000,
+    hitos: { tests: 'ok' as const, commit: 'pendiente' as const, push: 'pendiente' as const, deploy: 'pendiente' as const },
+  }
+  const doce = 12 * 60_000
+  expect(ajustar(base, doce)).toBe(18 * 60_000)
+  expect(ajustar({ ...base, hitos: { ...base.hitos, commit: 'ok', push: 'ok' } }, doce)).toBe(15 * 60_000)
+  expect(ajustar({ ...base, hitos: { ...base.hitos, deploy: 'corriendo' } }, doce)).toBe(15 * 60_000)
+  expect(ajustar({ ...base, hitos: { ...base.hitos, deploy: 'ok' } }, doce)).toBe(doce)
+  expect(linea({ ...base, estAjustado: 18 * 60_000 }, 14 * 60_000, doce)).toContain('14/12→18 min')
+})

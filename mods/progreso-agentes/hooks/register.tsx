@@ -127,6 +127,18 @@ export function clasificar(encargo: string): Clase {
   return nivel === 0 ? 'corta' : nivel === 1 ? 'normal' : 'larga'
 }
 
+// Al llegar al 85 % del estimado se amplía una vez, según lo que falta del recorrido
+export function ajustar(t: Tarea, est: number): number {
+  const h = t.hitos
+  if (h.deploy === 'ok') return est
+  if (h.deploy === 'corriendo') return est + 3 * 60_000
+  const hechos = [h.commit, h.push].filter(x => x === 'ok').length
+  return Math.round(est * (hechos === 0 ? 1.5 : 1.25))
+}
+
+// El estimado que vale para la tarea: el ajustado si ya lo tiene
+export const vigente = (t: Tarea, est: number) => t.estAjustado ?? est
+
 // Mediana de lo que tardaron las últimas 10 de la misma clase; si no hay, el inicial
 async function estimado($: EngineInterface, clase: Clase = 'normal'): Promise<number> {
   const durs = ((await $.store.get(`duraciones:${clase}`)) as number[] | undefined) ?? []
@@ -164,17 +176,30 @@ async function conciliar($: EngineInterface): Promise<void> {
   })
 }
 
+async function revisarEstimados($: EngineInterface): Promise<void> {
+  const ahora = await $.clock.now()
+  for (const x of Object.values(await read($, tareas))) {
+    if (x.estado !== 'corriendo' || x.estAjustado) continue
+    const est = await estimado($, x.clase)
+    if (ahora - x.inicio < 0.85 * est) continue
+    const nuevo = ajustar(x, est)
+    await update($, tareas, t => (t[x.id] ? { ...t, [x.id]: { ...t[x.id]!, estAjustado: nuevo } } : t))
+  }
+}
+
 async function estado($: EngineInterface): Promise<void> {
   // La línea se dibuja en la franja sobre el prompt (con color): aquí solo se limpia la de estado
   $.ui.status(undefined)
 }
 
 // Una línea compacta por agente: ⠋ 🚀 nombre ████░░ 80 % · 12/15 min · paso 18 · (el recorrido va aparte)
-export function partes(t: Tarea, ahora: number, est: number): [string, string, string, string] {
+export function partes(t: Tarea, ahora: number, base: number): [string, string, string, string] {
+  const est = vigente(t, base)
   const dur = ahora - t.inicio
   const fr = Math.min(0.95, dur / est)
   const mini = barra(fr, 10)
-  const tiempo = `${t.aproximado ? '≥' : ''}${Math.floor(dur / 60_000)}/${Math.round(est / 60_000)} min`
+  const meta = t.estAjustado ? `${Math.round(base / 60_000)}→${Math.round(est / 60_000)}` : `${Math.round(est / 60_000)}`
+  const tiempo = `${t.aproximado ? '≥' : ''}${Math.floor(dur / 60_000)}/${meta} min`
   const aviso = dur > est ? ' ⚠️' : ''
   const min = quieto(t, ahora)
   const parado = min ? ` · ⏸️ sin actividad hace ${min} min` : ''
@@ -195,6 +220,7 @@ export const register: Register = on => {
     $.clock.every(1000, () => {
       void (async () => {
         if (++vueltas % 15 === 0) await conciliar($)
+        if (vueltas % 5 === 0) await revisarEstimados($)
         const t = await read($, tareas)
         if (Object.values(t).some(x => x.estado === 'corriendo')) {
           await update($, tick, n => n + 1)
@@ -291,7 +317,7 @@ export const register: Register = on => {
           const est = ests[t.id]!
           // El texto en celeste; la barra y su % verde, ámbar o coral según el tiempo
           const [antes, mini, pct, despues] = partes(t, ahora, est)
-          const color = colorBarra(ahora - t.inicio, est)
+          const color = colorBarra(ahora - t.inicio, vigente(t, est))
           return (
             <Box flexDirection="row">
               <Text color={TEXTO}>{antes}</Text>
@@ -323,7 +349,8 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {lista.map(t => {
-          const est = ests[t.id]!
+          const base = ests[t.id]!
+          const est = vigente(t, base)
           const dur = (t.fin ?? ahora) - t.inicio
           const corriendo = t.estado === 'corriendo'
           // La barra avanza con el tiempo, no con el trabajo: se frena en 95 % hasta que termina
@@ -336,7 +363,7 @@ export const register: Register = on => {
               <Text bold>{estadoIcono} {icono(t)} {t.descripcion}</Text>
               <Text>
                 ⏱️ {t.aproximado ? '≥' : ''}{minutos(dur)}
-                {corriendo ? ` (estimado ~${minutos(est)}, tarea ${t.clase ?? 'normal'})` : ' en total'}
+                {corriendo ? ` (estimado ~${minutos(est)}${t.estAjustado ? `, ampliado desde ${minutos(base)}` : ''}, tarea ${t.clase ?? 'normal'})` : ' en total'}
               </Text>
               <Text color={tarde ? 'yellow' : corriendo ? 'cyan' : 'green'}>
                 {barra(fr)} {corriendo ? `${Math.round(fr * 100)} %` : 'listo'}

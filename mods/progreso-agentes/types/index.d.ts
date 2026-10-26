@@ -12,6 +12,8 @@ export type Tarea = {
   pasos: number
   // Tamaño esperado de la tarea, deducido del encargo al lanzarla
   clase?: Clase
+  // Estimado ampliado una sola vez al llegar al 85 %, según los hitos que faltan
+  estAjustado?: number
   // Última vez que el agente usó una herramienta, y cuántas llamadas tiene en curso
   ultimaActividad?: number
   enCurso?: number
