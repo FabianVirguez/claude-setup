@@ -3,13 +3,14 @@
 Barra de progreso para los agentes en segundo plano de Claude Code. / A progress bar for Claude Code's background agents.
 
 ```
-⠹ 🚀 Deploy API ████████▍░ 84 % · 9/11 min · paso 42 · tests ✓ › commit ✓ › push ⟳ › deploy …
+⠹ 🚀 Deploy API ████████▍░ 84 % · 9/~11 min · paso 42/~50 · tests ✓ › commit ✓ › push ⟳ › deploy …
 ```
 
 **Qué muestra / What it shows** (una línea por agente sobre el prompt / one line per agent above the prompt):
 
 - Un ícono según la tarea (🚀 deploy, 🧪 tests, 🩹 fix, 🔍 search…) y un indicador animado mientras trabaja.
-- Tiempo transcurrido contra un estimado según el tamaño del encargo (corta ~5 min, normal ~12, larga ~30 al principio), que después aprende de lo que tardaron las últimas 10 tareas de cada tamaño. Al llegar al 85 % se amplía una sola vez según los hitos que faltan (`14/12→18 min`); si se pasa también de ese, aparece ⚠️. La barra avanza por tiempo, no por trabajo: verde a tiempo, ámbar cerca del estimado, coral con ⚠️ si se pasa.
+- La barra avanza por trabajo: los pasos (herramientas usadas) del agente contra la mediana de pasos de las últimas 10 corridas de su mismo tipo (`general-purpose`, `Explore`, `infra-code`…), frenada en 95 % hasta que termina (`paso 42/~50`). Si ese tipo todavía no tiene historial, la barra es indeterminada: un bloque que va y viene, sin %.
+- El tiempo da el color: transcurrido contra la mediana de su tipo; sin historial del tipo, contra un estimado según el tamaño del encargo (corta ~5 min, normal ~12, larga ~30 al principio, que aprende de las últimas 10 de cada tamaño). Al llegar al 85 % se amplía una sola vez según los hitos que faltan (`14/~12→18 min`). Verde a tiempo, ámbar cerca del estimado, coral con ⚠️ si se pasa.
 - Pasos, y los hitos como recorrido: `tests ✓ › commit ✓ › push ⟳ › deploy …`, detectados por los comandos que corre (pytest, jest, npm test, go test…; git commit/push; railway, vercel, fly, kubectl, helm, terraform…).
 - `⏸️ sin actividad` si pasa más de 3 min sin usar herramientas (no cuenta un comando largo en curso).
 - Al terminar: un sonido (macOS), una notificación y un toast.

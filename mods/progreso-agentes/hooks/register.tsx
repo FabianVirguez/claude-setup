@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Clase, Hito, Tarea } from '../types'
+import type { Clase, Corrida, Hito, Referencia, Tarea } from '../types'
 
 const PANEL = 'progreso-agentes'
 const TITULO = 'Progreso de agentes'
@@ -47,6 +47,20 @@ export function barra(fraccion: number, ancho = ANCHO_BARRA): string {
   const llenos = Math.floor(ochos / 8)
   const resto = OCTAVOS[ochos % 8]!
   return '█'.repeat(llenos) + resto + '░'.repeat(ancho - llenos - (resto ? 1 : 0))
+}
+
+// Sin historial del tipo no hay contra qué medir el trabajo: un bloque que va y viene, sin %
+export function indeterminada(ahora: number, ancho = ANCHO_BARRA, bloque = 3): string {
+  const recorrido = ancho - bloque
+  const paso = Math.floor(ahora / 1000) % (recorrido * 2)
+  const pos = paso <= recorrido ? paso : recorrido * 2 - paso
+  return '░'.repeat(pos) + '█'.repeat(bloque) + '░'.repeat(recorrido - pos)
+}
+
+// Cuánto del trabajo va hecho: pasos contra los típicos de su tipo. Sin referencia, undefined
+export function avance(t: Tarea, ref: Referencia): number | undefined {
+  if (t.estado !== 'corriendo') return 1
+  return ref.pasos ? Math.min(0.95, t.pasos / ref.pasos) : undefined
 }
 
 // Minutos sin usar ninguna herramienta (y sin ninguna en curso); 0 si está activo
@@ -139,12 +153,23 @@ export function ajustar(t: Tarea, est: number): number {
 // El estimado que vale para la tarea: el ajustado si ya lo tiene
 export const vigente = (t: Tarea, est: number) => t.estAjustado ?? est
 
+export function mediana(xs: number[]): number {
+  const orden = [...xs].sort((a, b) => a - b)
+  return orden[Math.floor(orden.length / 2)]!
+}
+
 // Mediana de lo que tardaron las últimas 10 de la misma clase; si no hay, el inicial
 async function estimado($: EngineInterface, clase: Clase = 'normal'): Promise<number> {
   const durs = ((await $.store.get(`duraciones:${clase}`)) as number[] | undefined) ?? []
-  if (!durs.length) return ESTIMADO_INICIAL[clase]
-  const orden = [...durs].sort((a, b) => a - b)
-  return orden[Math.floor(orden.length / 2)]!
+  return durs.length ? mediana(durs) : ESTIMADO_INICIAL[clase]
+}
+
+// Referencia del agente: tiempo y pasos típicos de su tipo (últimas 10 corridas);
+// si su tipo no tiene historial, el tiempo de su clase y sin pasos (barra indeterminada)
+async function referencia($: EngineInterface, t: Tarea): Promise<Referencia> {
+  const corridas = t.tipo ? ((await $.store.get(`tipo:${t.tipo}`)) as Corrida[] | undefined) ?? [] : []
+  if (!corridas.length) return { ms: await estimado($, t.clase) }
+  return { ms: mediana(corridas.map(c => c.ms)), pasos: Math.max(1, mediana(corridas.map(c => c.pasos))) }
 }
 
 // true si el agente se sigue. Uno que ya andaba cuando se cargó el mod se toma de la lista;
@@ -180,7 +205,7 @@ async function revisarEstimados($: EngineInterface): Promise<void> {
   const ahora = await $.clock.now()
   for (const x of Object.values(await read($, tareas))) {
     if (x.estado !== 'corriendo' || x.estAjustado) continue
-    const est = await estimado($, x.clase)
+    const est = (await referencia($, x)).ms
     if (ahora - x.inicio < 0.85 * est) continue
     const nuevo = ajustar(x, est)
     await update($, tareas, t => (t[x.id] ? { ...t, [x.id]: { ...t[x.id]!, estAjustado: nuevo } } : t))
@@ -192,24 +217,26 @@ async function estado($: EngineInterface): Promise<void> {
   $.ui.status(undefined)
 }
 
-// Una línea compacta por agente: ⠋ 🚀 nombre ████░░ 80 % · 12/15 min · paso 18 · (el recorrido va aparte)
-export function partes(t: Tarea, ahora: number, base: number): [string, string, string, string] {
-  const est = vigente(t, base)
+// Una línea compacta por agente: ⠋ 🚀 nombre ████░░ 80 % · 12/15 min · paso 18/22 · (el recorrido va aparte)
+// La barra avanza con los pasos contra los típicos de su tipo; el tiempo solo da el color y el ⚠️
+export function partes(t: Tarea, ahora: number, ref: Referencia): [string, string, string, string] {
+  const est = vigente(t, ref.ms)
   const dur = ahora - t.inicio
-  const fr = Math.min(0.95, dur / est)
-  const mini = barra(fr, 10)
-  const meta = t.estAjustado ? `${Math.round(base / 60_000)}→${Math.round(est / 60_000)}` : `${Math.round(est / 60_000)}`
-  const tiempo = `${t.aproximado ? '≥' : ''}${Math.floor(dur / 60_000)}/${meta} min`
+  const fr = avance(t, ref)
+  const mini = fr === undefined ? indeterminada(ahora, 10) : barra(fr, 10)
+  const meta = t.estAjustado ? `${Math.round(ref.ms / 60_000)}→${Math.round(est / 60_000)}` : `${Math.round(est / 60_000)}`
+  const tiempo = `${t.aproximado ? '≥' : ''}${Math.floor(dur / 60_000)}/~${meta} min`
   const aviso = dur > est ? ' ⚠️' : ''
   const min = quieto(t, ahora)
   const parado = min ? ` · ⏸️ sin actividad hace ${min} min` : ''
   const giro = min ? '⏸' : GIRO[Math.floor(ahora / 1000) % GIRO.length]!
-  return [`${giro} ${icono(t)} ${t.descripcion} `, mini, ` ${Math.round(fr * 100)} %${aviso}`,
-    ` · ${tiempo} · paso ${t.pasos}${parado} · `]
+  const pasos = ref.pasos ? `paso ${t.pasos}/~${ref.pasos}` : `paso ${t.pasos}`
+  return [`${giro} ${icono(t)} ${t.descripcion} `, mini, fr === undefined ? `${aviso}` : ` ${Math.round(fr * 100)} %${aviso}`,
+    ` · ${tiempo} · ${pasos}${parado} · `]
 }
 
-export function linea(t: Tarea, ahora: number, est: number): string {
-  return partes(t, ahora, est).join('') + textoRecorrido(t)
+export function linea(t: Tarea, ahora: number, ref: Referencia): string {
+  return partes(t, ahora, ref).join('') + textoRecorrido(t)
 }
 
 export const register: Register = on => {
@@ -241,7 +268,7 @@ export const register: Register = on => {
     if (r.agentId) {
       const id = r.agentId
       const ahora = await $.clock.now()
-      await update($, tareas, t => ({ ...t, [id]: { ...nueva(id, e.description, ahora, false), clase: clasificar(e.prompt) } }))
+      await update($, tareas, t => ({ ...t, [id]: { ...nueva(id, e.description, ahora, false), clase: clasificar(e.prompt), tipo: e.subagentType } }))
       void $.ui.open({ id: PANEL, title: TITULO })
       await estado($)
     }
@@ -290,6 +317,11 @@ export const register: Register = on => {
           const clave = `duraciones:${x.clase ?? 'normal'}`
           const durs = ((await $.store.get(clave)) as number[] | undefined) ?? []
           await $.store.set(clave, [...durs, ahora - x.inicio].slice(-10))
+          if (x.tipo) {
+            const claveTipo = `tipo:${x.tipo}`
+            const corridas = ((await $.store.get(claveTipo)) as Corrida[] | undefined) ?? []
+            await $.store.set(claveTipo, [...corridas, { ms: ahora - x.inicio, pasos: x.pasos }].slice(-10))
+          }
         }
         // Aviso de la Mac y toast, para cuando no se está mirando la terminal
         const texto = `${ok ? '✅' : '❌'} ${x.descripcion} ${ok ? 'terminó' : 'falló'} en ${minutos(ahora - x.inicio)}`
@@ -310,14 +342,14 @@ export const register: Register = on => {
     if (!activas.length || e.props.hasSurvey) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const ahora = await $.clock.now()
-    const ests = Object.fromEntries(await Promise.all(activas.map(async t => [t.id, await estimado($, t.clase)] as const)))
+    const refs = Object.fromEntries(await Promise.all(activas.map(async t => [t.id, await referencia($, t)] as const)))
     return (
       <Box flexDirection="column">
         {activas.map(t => {
-          const est = ests[t.id]!
+          const ref = refs[t.id]!
           // El texto en celeste; la barra y su % verde, ámbar o coral según el tiempo
-          const [antes, mini, pct, despues] = partes(t, ahora, est)
-          const color = colorBarra(ahora - t.inicio, vigente(t, est))
+          const [antes, mini, pct, despues] = partes(t, ahora, ref)
+          const color = colorBarra(ahora - t.inicio, vigente(t, ref.ms))
           return (
             <Box flexDirection="row">
               <Text color={TEXTO}>{antes}</Text>
@@ -344,17 +376,19 @@ export const register: Register = on => {
       .sort((a, b) => b.inicio - a.inicio)
 
     if (!lista.length) return <Text dimColor>No hay agentes trabajando.</Text>
-    const ests = Object.fromEntries(await Promise.all(lista.map(async t => [t.id, await estimado($, t.clase)] as const)))
+    const refs = Object.fromEntries(await Promise.all(lista.map(async t => [t.id, await referencia($, t)] as const)))
 
     return (
       <Box flexDirection="column">
         {lista.map(t => {
-          const base = ests[t.id]!
+          const ref = refs[t.id]!
+          const base = ref.ms
           const est = vigente(t, base)
           const dur = (t.fin ?? ahora) - t.inicio
           const corriendo = t.estado === 'corriendo'
-          // La barra avanza con el tiempo, no con el trabajo: se frena en 95 % hasta que termina
-          const fr = corriendo ? Math.min(0.95, dur / est) : 1
+          // La barra avanza con el trabajo (pasos contra los típicos de su tipo), se frena en 95 %
+          // hasta que termina; sin historial del tipo va y viene, sin %
+          const fr = avance(t, ref)
           const tarde = corriendo && dur > est
           const min = corriendo ? quieto(t, ahora) : 0
           const estadoIcono = corriendo ? GIRO[Math.floor(ahora / 1000) % GIRO.length] : t.estado === 'listo' ? '✅' : '❌'
@@ -363,14 +397,15 @@ export const register: Register = on => {
               <Text bold>{estadoIcono} {icono(t)} {t.descripcion}</Text>
               <Text>
                 ⏱️ {t.aproximado ? '≥' : ''}{minutos(dur)}
-                {corriendo ? ` (estimado ~${minutos(est)}${t.estAjustado ? `, ampliado desde ${minutos(base)}` : ''}, tarea ${t.clase ?? 'normal'})` : ' en total'}
+                {corriendo ? ` (estimado ~${minutos(est)}${t.estAjustado ? `, ampliado desde ${minutos(base)}` : ''}, ${ref.pasos ? `según ${t.tipo}` : `tarea ${t.clase ?? 'normal'}`})` : ' en total'}
               </Text>
               <Text color={tarde ? 'yellow' : corriendo ? 'cyan' : 'green'}>
-                {barra(fr)} {corriendo ? `${Math.round(fr * 100)} %` : 'listo'}
+                {fr === undefined ? indeterminada(ahora) : barra(fr)}{' '}
+                {!corriendo ? 'listo' : fr === undefined ? `sin historial de ${t.tipo ?? 'este tipo'}` : `${Math.round(fr * 100)} %`}
               </Text>
               {tarde && <Text color="yellow">⚠️ Va más lento de lo estimado</Text>}
               {min > 0 && <Text color="yellow">⏸️ Sin actividad hace {min} min (¿atascado?)</Text>}
-              <Text dimColor>📍 Paso {t.pasos} · {t.ultima}</Text>
+              <Text dimColor>📍 Paso {t.pasos}{corriendo && ref.pasos ? ` de ~${ref.pasos}` : ''} · {t.ultima}</Text>
               <Box flexDirection="row">
                 {recorrido(t).flatMap((r, i) => [
                   <Text>{i ? ' › ' : ''}{r.nombre} </Text>,
