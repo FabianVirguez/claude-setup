@@ -16,6 +16,13 @@ export type Tarea = {
   tipo?: string
   // Estimado ampliado una sola vez al llegar al 85 %, según los hitos que faltan
   estAjustado?: number
+  // Lo que el modelo chico estimó para esta tarea al lanzarla (pasos y ms); sin respuesta, ausente
+  estPasos?: number
+  estMs?: number
+  // Pasos de referencia ampliados una sola vez al llegar al 90 %
+  pasosAjustados?: number
+  // Comienzo del encargo, para calibrar estimados futuros con esta tarea
+  extracto?: string
   // Última vez que el agente usó una herramienta, y cuántas llamadas tiene en curso
   ultimaActividad?: number
   enCurso?: number
@@ -27,8 +34,22 @@ export type Tarea = {
 // Lo que se aprende de un agente del mismo tipo que terminó bien
 export type Corrida = { ms: number; pasos: number }
 
-// Contra qué se mide un agente: tiempo típico (siempre) y pasos típicos de su tipo (solo con historial)
-export type Referencia = { ms: number; pasos?: number }
+// Una tarea terminada bien, con lo real y lo estimado: calibra al modelo y da la referencia general
+export type Registro = {
+  descripcion: string
+  tipo?: string
+  extracto: string
+  pasos: number
+  ms: number
+  estPasos?: number
+  estMs?: number
+}
+
+// De dónde sale la referencia: el modelo, el historial de su tipo, el historial general, o nada
+export type Fuente = 'modelo' | 'tipo' | 'general' | 'ninguna'
+
+// Contra qué se mide un agente: tiempo (siempre) y pasos (solo con alguna referencia)
+export type Referencia = { ms: number; pasos?: number; fuente?: Fuente }
 
 declare module 'claude-code' {
   interface PluginState {

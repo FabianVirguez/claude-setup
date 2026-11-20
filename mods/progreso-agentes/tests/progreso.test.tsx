@@ -63,9 +63,13 @@ test('sin historial del tipo la barra va y viene, sin % ni pasos de referencia',
   expect(indeterminada(10_000, 10)).toBe('░░░░███░░░')
 })
 
-test('aprende pasos y tiempo por tipo de agente y los usa para el siguiente', async ($, on) => {
-  const store = new Map<string, unknown>()
-  let ahora = 0
+import type { Engine, TestBody } from 'claude-code/testing'
+
+type On = Parameters<TestBody>[1]
+const SIN_USO = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+// El motor de mentira que comparten las pruebas que lanzan agentes y los terminan
+function motor(on: On, store: Map<string, unknown>, reloj: () => number) {
   on('command.register', () => ({ value: { command: 'progreso' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
@@ -78,25 +82,160 @@ test('aprende pasos y tiempo por tipo de agente y los usa para el siguiente', as
   on('agent.list', () => ({ value: [] }))
   on('tool.call', () => ({ result: {} }))
   on('turn.complete', () => ({ text: '' }))
-  on('clock.now', () => ({ value: ahora }))
-  on('clock.every', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: reloj() }))
+  // Sin el redibujo periódico: su conciliación cerraría agentes que esta lista de mentira no nombra
+  on('clock.every', () => ({ deny: 'sin timers en la prueba' }))
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => { store.set(e.key, e.value); return { value: undefined } })
+}
+
+const lanzar = ($: Engine, description: string, subagentType?: string, prompt = 'x') =>
+  $.agent.spawn({ prompt, description, subagentType } as Parameters<typeof $.agent.spawn>[0])
+const pasos = async ($: Engine, agentId: string, n: number) => {
+  for (let i = 0; i < n; i++) await $.tool.call({ tool: 'Read', file_path: '/a', agentId } as Parameters<typeof $.tool.call>[0])
+}
+const terminar = ($: Engine, agentId: string) =>
+  $.turn.complete({ agentId, reason: 'answer' } as Parameters<typeof $.turn.complete>[0])
+
+test('aprende pasos y tiempo por tipo de agente y, con 3 corridas, los usa si el modelo falla', async ($, on) => {
+  const store = new Map<string, unknown>()
+  let ahora = 0
+  motor(on, store, () => ahora)
+  on('model.complete', () => ({ value: { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: SIN_USO } }))
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await $.agent.spawn({ prompt: 'x', description: 'Memoria', subagentType: 'infra-context' } as Parameters<typeof $.agent.spawn>[0])
-  for (let i = 0; i < 10; i++) await $.tool.call({ tool: 'Read', file_path: '/a', agentId: 'ag1' } as Parameters<typeof $.tool.call>[0])
-  ahora = 2 * 60_000
-  await $.turn.complete({ agentId: 'ag1', reason: 'answer' } as Parameters<typeof $.turn.complete>[0])
-  expect(store.get('tipo:infra-context')).toEqual([{ ms: 2 * 60_000, pasos: 10 }])
+  for (let i = 1; i <= 3; i++) {
+    ahora = (i - 1) * 10 * 60_000
+    await lanzar($, `Memoria ${i}`, 'infra-context')
+    await pasos($, `ag${i}`, 10)
+    ahora += 2 * 60_000
+    await terminar($, `ag${i}`)
+  }
+  expect(store.get('tipo:infra-context')).toHaveLength(3)
+  expect((store.get('tipo:infra-context') as unknown[])[0]).toEqual({ ms: 2 * 60_000, pasos: 10 })
 
-  await $.agent.spawn({ prompt: 'x', description: 'Memoria 2', subagentType: 'infra-context' } as Parameters<typeof $.agent.spawn>[0])
-  for (let i = 0; i < 5; i++) await $.tool.call({ tool: 'Read', file_path: '/a', agentId: 'ag2' } as Parameters<typeof $.tool.call>[0])
-  ahora = 3 * 60_000
+  ahora = 100 * 60_000
+  await lanzar($, 'Memoria 4', 'infra-context')
+  await pasos($, 'ag4', 5)
+  ahora += 60_000
   const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /50 %/ }))?.text).toContain('█')
-  expect((await ui.find({ type: 'Text', text: /Paso 5 de ~10/ }))).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Paso 5 de ~10/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /según infra-context/ })).toBeTruthy()
   await ui.unmount()
+})
+
+test('el modelo estima pasos y minutos con el historial como calibración, y la barra lo usa', async ($, on) => {
+  const store = new Map<string, unknown>()
+  store.set('historial', [{ descripcion: 'Migrar tabla clientes', tipo: 'general-purpose', extracto: 'Migrá la tabla', pasos: 40, ms: 8 * 60_000 }])
+  let ahora = 0
+  motor(on, store, () => ahora)
+  const pedidos: { model: string; prompt: string }[] = []
+  on('model.complete', (_, e) => {
+    pedidos.push({ model: e.model, prompt: e.prompt })
+    return { value: { isAnswered: true, text: 'Claro: {"pasos": 20, "minutos": 10} listo', usage: SIN_USO } }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await lanzar($, 'Revisar checkout', 'general-purpose', 'Revisá el flujo de checkout y corregí el bug del envío')
+  await pasos($, 'ag1', 5)
+  ahora = 2 * 60_000
+
+  expect(pedidos).toHaveLength(1)
+  expect(pedidos[0]!.model).toBe('haiku')
+  expect(pedidos[0]!.prompt).toContain('Revisar checkout')
+  expect(pedidos[0]!.prompt).toContain('Revisá el flujo de checkout')
+  expect(pedidos[0]!.prompt).toContain('Migrar tabla clientes')
+  expect(pedidos[0]!.prompt).toContain('40 pasos, 8 min')
+
+  const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /25 %/ }))?.text).toContain('█')
+  expect(await ui.find({ type: 'Text', text: /Paso 5 de ~20/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /estimado ~10 min, estimado por el modelo/ })).toBeTruthy()
+
+  // Al terminar bien queda en el historial, con lo real y lo estimado
+  ahora = 6 * 60_000
+  await terminar($, 'ag1')
+  await ui.unmount()
+  const h = store.get('historial') as unknown[]
+  expect(h).toHaveLength(2)
+  expect(h[1]).toEqual({ descripcion: 'Revisar checkout', tipo: 'general-purpose', extracto: 'Revisá el flujo de checkout y corregí el bug del envío',
+                         pasos: 5, ms: 6 * 60_000, estPasos: 20, estMs: 10 * 60_000 })
+})
+
+test('una respuesta inservible del modelo deja la barra indeterminada si no hay otra referencia', async ($, on) => {
+  const store = new Map<string, unknown>()
+  motor(on, store, () => 60_000)
+  on('model.complete', () => ({ value: { isAnswered: true, text: 'No sé, depende.', usage: SIN_USO } }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await lanzar($, 'Algo nuevo', 'infra-context')
+  await pasos($, 'ag1', 3)
+  const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /sin referencia todavía/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /\d %/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /sin referencia, tarea corta/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('con 3 tareas en el historial general, sin modelo ni tipo, usa la referencia general', async ($, on) => {
+  const store = new Map<string, unknown>()
+  const r = (pasos: number) => ({ descripcion: 'x', extracto: 'x', pasos, ms: 4 * 60_000 })
+  store.set('historial', [r(10), r(20), r(30)])
+  motor(on, store, () => 60_000)
+  on('model.complete', () => ({ value: { isAnswered: false, reason: 'aborted', usage: SIN_USO } }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await lanzar($, 'Algo nuevo', 'otro-tipo')
+  await pasos($, 'ag1', 5)
+  const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Paso 5 de ~20/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /referencia general/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('al 90 % de los pasos estimados se amplían una sola vez', async ($, on) => {
+  const store = new Map<string, unknown>()
+  motor(on, store, () => 60_000)
+  on('model.complete', () => ({ value: { isAnswered: true, text: '{"pasos": 10, "minutos": 5}', usage: SIN_USO } }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await lanzar($, 'Algo nuevo')
+  await pasos($, 'ag1', 8)
+  const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Paso 8 de ~10 ·/ })).toBeTruthy()
+
+  await pasos($, 'ag1', 1)
+  expect(await ui.find({ type: 'Text', text: /Paso 9 de ~15 \(ampliado desde ~10\)/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /60 %/ })).toBeTruthy()
+
+  // Pasado también el ampliado, no se amplía de nuevo: se frena en 95 %
+  await pasos($, 'ag1', 6)
+  expect(await ui.find({ type: 'Text', text: /Paso 15 de ~15 \(ampliado/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /95 %/ })).toBeTruthy()
+  await ui.unmount()
+})
+
+import { leerEstimado, pedido } from '../hooks/register'
+
+test('lee el estimado del modelo a la defensiva y lo acota', () => {
+  expect(leerEstimado('{"pasos": 12, "minutos": 4.5}')).toEqual({ pasos: 12, ms: 4.5 * 60_000 })
+  expect(leerEstimado('Mi estimado: {"pasos": "7", "minutos": "3"} y nada más {"pasos": 99}')).toEqual({ pasos: 7, ms: 3 * 60_000 })
+  expect(leerEstimado('{"pasos": 1000, "minutos": 0}')).toEqual({ pasos: 400, ms: 30_000 })
+  expect(leerEstimado('{"pasos": 1, "minutos": 900}')).toEqual({ pasos: 3, ms: 120 * 60_000 })
+  expect(leerEstimado('{"pasos": 10}')).toBeUndefined()
+  expect(leerEstimado('{pasos: 10, minutos: 2}')).toBeUndefined()
+  expect(leerEstimado('nada')).toBeUndefined()
+})
+
+test('el pedido recorta el encargo y usa a lo sumo 15 ejemplos', () => {
+  const h = Array.from({ length: 20 }, (_, i) => ({ descripcion: `Tarea ${i}`, extracto: 'e', pasos: 5, ms: 60_000 }))
+  const p = pedido({ description: 'Nueva', prompt: 'a'.repeat(10_000) }, h)
+  expect(p).not.toContain('Tarea 4 ')
+  expect(p).toContain('Tarea 5 ')
+  expect(p).toContain('Tarea 19 ')
+  expect(p).toContain('…[recortado]')
+  expect(p.length).toBeLessThan(8000)
 })
 
 import { colorBarra } from '../hooks/register'
