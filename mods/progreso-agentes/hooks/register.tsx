@@ -26,8 +26,11 @@ const MAX_HISTORIAL = 30
 const MIN_CORRIDAS = 3
 // El tiempo sale de los pasos por el ritmo aprendido (ms por paso); sin historial, este
 const MS_POR_PASO_INICIAL = 8000
-const MIN_EST_MS = 30_000
+const MIN_EST_MS = 10_000
 const MAX_EST_MS = 120 * 60_000
+// Versión del pedido al modelo (SISTEMA + pedido()). El sesgo se mide solo con estimados de esta versión:
+// subirla al cambiar el pedido descarta el sesgo medido con el anterior. Sin campo, versión 1 (0.3.0)
+export const VERSION_PEDIDO = 2
 // Corrección del sesgo del modelo: mediana de real/estimado, acotada
 const MIN_SESGO = 0.2
 const MAX_SESGO = 5
@@ -217,9 +220,10 @@ export function leerEstimado(texto: string): number | undefined {
 // Lo que el modelo estimó en crudo para un registro (los de 0.3.0 solo guardaban estPasos, que era crudo)
 const crudo = (r: Registro) => r.estPasosModelo ?? r.estPasos
 
-// Sesgo del modelo: mediana de pasos reales / estimado crudo en las últimas 15 con estimado; sin ninguna, 1
+// Sesgo del modelo: mediana de pasos reales / estimado crudo en las últimas 15 con estimado de la versión
+// actual del pedido; sin ninguna, 1
 export function sesgo(historial: Registro[]): number {
-  const xs = historial.filter(r => (crudo(r) ?? 0) > 0 && r.pasos > 0).slice(-EJEMPLOS).map(r => r.pasos / crudo(r)!)
+  const xs = historial.filter(r => (r.versionPedido ?? 1) === VERSION_PEDIDO && (crudo(r) ?? 0) > 0 && r.pasos > 0).slice(-EJEMPLOS).map(r => r.pasos / crudo(r)!)
   return xs.length ? acotar(mediana(xs), MIN_SESGO, MAX_SESGO) : 1
 }
 
@@ -275,7 +279,7 @@ async function estimar($: EngineInterface, id: string, e: { description: string;
       if (!x) return t
       // Lo ampliado contra otra referencia ya no vale
       const { estAjustado: _t, pasosAjustados: _p, ...resto } = x
-      return { ...t, [id]: { ...resto, ...est } }
+      return { ...t, [id]: { ...resto, ...est, versionPedido: VERSION_PEDIDO } }
     })
   } catch {
     // Modelo bloqueado o pedido rechazado: la barra usa lo aprendido
@@ -483,7 +487,8 @@ export const register: Register = on => {
           const registro: Registro = { descripcion: x.descripcion, extracto: x.extracto ?? '', pasos: x.pasos, ms: ahora - x.inicio,
                                        ...(x.tipo ? { tipo: x.tipo } : {}),
                                        ...(x.estPasos && x.estMs ? { estPasos: x.estPasos, estMs: x.estMs } : {}),
-                                       ...(x.estPasosModelo ? { estPasosModelo: x.estPasosModelo } : {}) }
+                                       ...(x.estPasosModelo ? { estPasosModelo: x.estPasosModelo } : {}),
+                                       ...(x.versionPedido ? { versionPedido: x.versionPedido } : {}) }
           await $.store.set('historial', [...(await leerHistorial($)), registro].slice(-MAX_HISTORIAL))
         }
         // Aviso de la Mac y toast, para cuando no se está mirando la terminal

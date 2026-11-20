@@ -163,7 +163,7 @@ test('el modelo estima solo pasos, el tiempo sale del ritmo aprendido y la barra
   const h = store.get('historial') as unknown[]
   expect(h).toHaveLength(2)
   expect(h[1]).toEqual({ descripcion: 'Revisar checkout', tipo: 'general-purpose', extracto: 'Revisá el flujo de checkout y corregí el bug del envío',
-                         pasos: 5, ms: 6 * 60_000, estPasos: 20, estMs: 4 * 60_000, estPasosModelo: 20 })
+                         pasos: 5, ms: 6 * 60_000, estPasos: 20, estMs: 4 * 60_000, estPasosModelo: 20, versionPedido: 2 })
 })
 
 test('una respuesta inservible del modelo deja la barra indeterminada si no hay otra referencia', async ($, on) => {
@@ -328,11 +328,11 @@ test('amplía el estimado según los hitos que faltan, y lo muestra', () => {
   expect(linea({ ...base, estAjustado: 18 * 60_000 }, 14 * 60_000, { ms: doce })).toContain('14/~12→18 min')
 })
 
-import { calibrar, msPorPaso, sesgo } from '../hooks/register'
+import { calibrar, msPorPaso, sesgo, VERSION_PEDIDO } from '../hooks/register'
 
 const reg = (pasos: number, ms: number, extra: object = {}) => ({ descripcion: 'x', extracto: 'x', pasos, ms, ...extra })
 
-test('el tiempo es pasos × ms por paso aprendidos; sin historial, 8 s por paso, acotado a 30 s–120 min', () => {
+test('el tiempo es pasos × ms por paso aprendidos; sin historial, 8 s por paso, acotado a 10 s–120 min', () => {
   expect(msPorPaso([])).toBe(8000)
   expect(calibrar(10, [])).toEqual({ estPasosModelo: 10, estPasos: 10, estMs: 80_000, sesgo: 1 })
   // Prefiere su tipo con 3 o más corridas; si no, todas
@@ -343,37 +343,46 @@ test('el tiempo es pasos × ms por paso aprendidos; sin historial, 8 s por paso,
   expect(msPorPaso(h, 'infra-code')).toBe(10_000)
   expect(calibrar(20, h, 'Explore').estMs).toBe(40_000)
   expect(calibrar(1, []).estPasos).toBe(2)
-  expect(calibrar(1, []).estMs).toBe(30_000)
+  expect(calibrar(1, []).estMs).toBe(16_000)
+  expect(calibrar(1, [reg(10, 1000)]).estMs).toBe(10_000)
   expect(calibrar(400, [reg(1, 60 * 60_000)]).estMs).toBe(120 * 60_000)
 })
 
-test('corrige el sesgo del modelo con la mediana real/estimado crudo, acotada a ×0,2–×5', () => {
+test('corrige el sesgo del modelo con la mediana real/estimado crudo de la versión actual, acotada a ×0,2–×5', () => {
+  const v = { versionPedido: VERSION_PEDIDO }
   expect(sesgo([])).toBe(1)
-  expect(sesgo([reg(5, 1000)])).toBe(1)
-  // Registro de 0.3.0: estPasos es el crudo
-  expect(sesgo([reg(4, 1000, { estPasos: 10 })])).toBe(0.4)
-  // Con estPasosModelo, el sesgo se mide contra el crudo, no contra el corregido
-  expect(sesgo([reg(4, 1000, { estPasos: 4, estPasosModelo: 10 })])).toBe(0.4)
-  expect(sesgo([reg(1, 1000, { estPasos: 100 })])).toBe(0.2)
-  expect(sesgo([reg(100, 1000, { estPasos: 2 })])).toBe(5)
-  expect(calibrar(10, [reg(4, 22_656, { estPasos: 10 })]).estPasos).toBe(4)
+  expect(sesgo([reg(5, 1000, v)])).toBe(1)
+  // El sesgo se mide contra el crudo, no contra el corregido
+  expect(sesgo([reg(4, 1000, { ...v, estPasos: 4, estPasosModelo: 10 })])).toBe(0.4)
+  expect(sesgo([reg(1, 1000, { ...v, estPasos: 100, estPasosModelo: 100 })])).toBe(0.2)
+  expect(sesgo([reg(100, 1000, { ...v, estPasos: 2, estPasosModelo: 2 })])).toBe(5)
+  expect(calibrar(10, [reg(4, 22_656, { ...v, estPasos: 4, estPasosModelo: 10 })]).estPasos).toBe(4)
 })
 
-test('la corrida real: crudo 10 con el historial 10 → 4 da 4 pasos y ~30 s, y guarda el crudo', async ($, on) => {
+test('los estimados de otra versión del pedido (o de 0.3.0, sin versión) no cuentan para el sesgo', () => {
+  // Los de 0.3.0: crudo 10 → real 4 y crudo 55 → real 14
+  const viejos = [reg(4, 22_656, { estPasos: 10, estMs: 240_000 }), reg(14, 120_000, { estPasos: 55, estPasosModelo: 55, versionPedido: 1 })]
+  expect(sesgo(viejos)).toBe(1)
+  expect(calibrar(4, viejos)).toMatchObject({ estPasosModelo: 4, estPasos: 4, sesgo: 1 })
+  // Mezclados, solo cuentan los de la versión actual
+  expect(sesgo([...viejos, reg(6, 1000, { estPasos: 3, estPasosModelo: 3, versionPedido: VERSION_PEDIDO })])).toBe(2)
+})
+
+test('la corrida real: crudo 4 con el historial de 0.3.0 (10 → 4) da 4 pasos sin corregir, y guarda crudo y versión', async ($, on) => {
   const store = new Map<string, unknown>()
   store.set('historial', [{ descripcion: 'Chequeo post-deploy', extracto: 'Read-only', pasos: 4, ms: 22_656, tipo: 'general-purpose',
                             estPasos: 10, estMs: 240_000 }])
   let ahora = 0
   motor(on, store, () => ahora)
-  on('model.complete', () => ({ value: { isAnswered: true, text: '{"pasos": 10}', usage: SIN_USO } }))
+  on('model.complete', () => ({ value: { isAnswered: true, text: '{"pasos": 4}', usage: SIN_USO } }))
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await lanzar($, 'Chequeo de nuevo', 'general-purpose', '1. a 2. b 3. c')
   await pasos($, 'ag1', 1)
   const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Paso 1 de ~4/ })).toBeTruthy()
-  // 4 × 5,7 s = 22,7 s, acotado a 30 s
-  expect(await ui.find({ type: 'Text', text: /estimado ~30 s, estimado por el modelo, corregido ×0,4\)/ })).toBeTruthy()
+  // El registro de 0.3.0 no corrige: ×1; 4 × 5,66 s = 22,6 s, sobre el mínimo de 10 s
+  expect(await ui.find({ type: 'Text', text: /estimado ~22 s, estimado por el modelo\)/ })).toBeTruthy()
 
   await pasos($, 'ag1', 3)
   ahora = 20_000
@@ -381,7 +390,7 @@ test('la corrida real: crudo 10 con el historial 10 → 4 da 4 pasos y ~30 s, y 
   await ui.unmount()
   const h = store.get('historial') as unknown[]
   expect(h[1]).toEqual({ descripcion: 'Chequeo de nuevo', tipo: 'general-purpose', extracto: '1. a 2. b 3. c', pasos: 4, ms: 20_000,
-                         estPasos: 4, estMs: 30_000, estPasosModelo: 10 })
+                         estPasos: 4, estMs: 22_656, estPasosModelo: 4, versionPedido: 2 })
 })
 
 test('con 3 pasos o más el tiempo se re-estima con el ritmo actual', () => {

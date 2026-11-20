@@ -23,6 +23,8 @@ export type Tarea = {
   // Pasos tal como los dijo el modelo (sin corregir) y el factor de sesgo aplicado
   estPasosModelo?: number
   sesgo?: number
+  // Versión del pedido con que se estimó (VERSION_PEDIDO)
+  versionPedido?: number
   // Pasos de referencia ampliados una sola vez al llegar al 90 %
   pasosAjustados?: number
   // Comienzo del encargo, para calibrar estimados futuros con esta tarea
@@ -50,6 +52,8 @@ export type Registro = {
   estPasos?: number
   estMs?: number
   estPasosModelo?: number
+  // Versión del pedido del estimado: el sesgo solo usa los de la actual. Sin campo, versión 1 (0.3.0)
+  versionPedido?: number
 }
 
 // De dónde sale la referencia: el modelo, el historial de su tipo, el historial general, o nada
