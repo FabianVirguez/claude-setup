@@ -41,8 +41,10 @@ test('la línea de estado lleva barra, tiempo, paso e hitos', () => {
   }
   const ref = { ms: 15 * 60_000, pasos: 22 }
   expect(linea(t, 12 * 60_000, ref)).toBe('⠋ 📊 Panel bajista ████████▏░ 82 % · 12/~15 min · paso 18/~22 · tests ✓ › commit … › push … › deploy …')
-  // La barra sigue a los pasos, no al reloj: pasado el tiempo solo aparece el ⚠️
-  expect(linea(t, 20 * 60_000, ref)).toContain('82 % ⚠️')
+  // El tiempo mostrado sigue al ritmo actual (20 min por 18 pasos → ~24 min para 22); el ⚠️ se mide contra el estimado (15 min)
+  expect(linea(t, 20 * 60_000, ref)).toContain('82 % ⚠️ · 20/~24 min')
+  // Con menos de 3 pasos vale el estimado: la barra sigue a los pasos y pasado el tiempo solo aparece el ⚠️
+  expect(linea({ ...t, pasos: 2 }, 20 * 60_000, ref)).toContain('9 % ⚠️ · 20/~15 min')
   expect(linea({ ...t, pasos: 40 }, 12 * 60_000, ref)).toContain('95 %')
 })
 
@@ -125,7 +127,7 @@ test('aprende pasos y tiempo por tipo de agente y, con 3 corridas, los usa si el
   await ui.unmount()
 })
 
-test('el modelo estima pasos y minutos con el historial como calibración, y la barra lo usa', async ($, on) => {
+test('el modelo estima solo pasos, el tiempo sale del ritmo aprendido y la barra lo usa', async ($, on) => {
   const store = new Map<string, unknown>()
   store.set('historial', [{ descripcion: 'Migrar tabla clientes', tipo: 'general-purpose', extracto: 'Migrá la tabla', pasos: 40, ms: 8 * 60_000 }])
   let ahora = 0
@@ -146,12 +148,13 @@ test('el modelo estima pasos y minutos con el historial como calibración, y la 
   expect(pedidos[0]!.prompt).toContain('Revisar checkout')
   expect(pedidos[0]!.prompt).toContain('Revisá el flujo de checkout')
   expect(pedidos[0]!.prompt).toContain('Migrar tabla clientes')
-  expect(pedidos[0]!.prompt).toContain('40 pasos, 8 min')
+  expect(pedidos[0]!.prompt).toContain('real: 40 pasos')
 
   const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /25 %/ }))?.text).toContain('█')
   expect(await ui.find({ type: 'Text', text: /Paso 5 de ~20/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /estimado ~10 min, estimado por el modelo/ })).toBeTruthy()
+  // Estimado: 20 pasos × 12 s (8 min / 40 pasos) = 4 min; con 5 pasos en 2 min el ritmo da ~8 min
+  expect(await ui.find({ type: 'Text', text: /estimado ~8 min, estimado por el modelo, tiempo según el ritmo actual\)/ })).toBeTruthy()
 
   // Al terminar bien queda en el historial, con lo real y lo estimado
   ahora = 6 * 60_000
@@ -160,7 +163,7 @@ test('el modelo estima pasos y minutos con el historial como calibración, y la 
   const h = store.get('historial') as unknown[]
   expect(h).toHaveLength(2)
   expect(h[1]).toEqual({ descripcion: 'Revisar checkout', tipo: 'general-purpose', extracto: 'Revisá el flujo de checkout y corregí el bug del envío',
-                         pasos: 5, ms: 6 * 60_000, estPasos: 20, estMs: 10 * 60_000 })
+                         pasos: 5, ms: 6 * 60_000, estPasos: 20, estMs: 4 * 60_000, estPasosModelo: 20 })
 })
 
 test('una respuesta inservible del modelo deja la barra indeterminada si no hay otra referencia', async ($, on) => {
@@ -218,13 +221,14 @@ test('al 90 % de los pasos estimados se amplían una sola vez', async ($, on) =>
 
 import { leerEstimado, pedido } from '../hooks/register'
 
-test('lee el estimado del modelo a la defensiva y lo acota', () => {
-  expect(leerEstimado('{"pasos": 12, "minutos": 4.5}')).toEqual({ pasos: 12, ms: 4.5 * 60_000 })
-  expect(leerEstimado('Mi estimado: {"pasos": "7", "minutos": "3"} y nada más {"pasos": 99}')).toEqual({ pasos: 7, ms: 3 * 60_000 })
-  expect(leerEstimado('{"pasos": 1000, "minutos": 0}')).toEqual({ pasos: 400, ms: 30_000 })
-  expect(leerEstimado('{"pasos": 1, "minutos": 900}')).toEqual({ pasos: 3, ms: 120 * 60_000 })
-  expect(leerEstimado('{"pasos": 10}')).toBeUndefined()
-  expect(leerEstimado('{pasos: 10, minutos: 2}')).toBeUndefined()
+test('lee los pasos del modelo a la defensiva, los acota e ignora los minutos', () => {
+  expect(leerEstimado('{"pasos": 12}')).toBe(12)
+  expect(leerEstimado('{"pasos": 12, "minutos": 4.5}')).toBe(12)
+  expect(leerEstimado('Mi estimado: {"pasos": "7"} y nada más {"pasos": 99}')).toBe(7)
+  expect(leerEstimado('{"pasos": 1000}')).toBe(400)
+  expect(leerEstimado('{"pasos": 0}')).toBe(1)
+  expect(leerEstimado('{"minutos": 10}')).toBeUndefined()
+  expect(leerEstimado('{pasos: 10}')).toBeUndefined()
   expect(leerEstimado('nada')).toBeUndefined()
 })
 
@@ -322,4 +326,97 @@ test('amplía el estimado según los hitos que faltan, y lo muestra', () => {
   expect(ajustar({ ...base, hitos: { ...base.hitos, deploy: 'corriendo' } }, doce)).toBe(15 * 60_000)
   expect(ajustar({ ...base, hitos: { ...base.hitos, deploy: 'ok' } }, doce)).toBe(doce)
   expect(linea({ ...base, estAjustado: 18 * 60_000 }, 14 * 60_000, { ms: doce })).toContain('14/~12→18 min')
+})
+
+import { calibrar, msPorPaso, sesgo } from '../hooks/register'
+
+const reg = (pasos: number, ms: number, extra: object = {}) => ({ descripcion: 'x', extracto: 'x', pasos, ms, ...extra })
+
+test('el tiempo es pasos × ms por paso aprendidos; sin historial, 8 s por paso, acotado a 30 s–120 min', () => {
+  expect(msPorPaso([])).toBe(8000)
+  expect(calibrar(10, [])).toEqual({ estPasosModelo: 10, estPasos: 10, estMs: 80_000, sesgo: 1 })
+  // Prefiere su tipo con 3 o más corridas; si no, todas
+  const h = [reg(10, 20_000, { tipo: 'Explore' }), reg(10, 20_000, { tipo: 'Explore' }), reg(10, 20_000, { tipo: 'Explore' }),
+             reg(10, 100_000), reg(10, 100_000), reg(10, 100_000), reg(10, 100_000)]
+  expect(msPorPaso(h, 'Explore')).toBe(2000)
+  expect(msPorPaso(h, 'general-purpose')).toBe(10_000)
+  expect(msPorPaso(h, 'infra-code')).toBe(10_000)
+  expect(calibrar(20, h, 'Explore').estMs).toBe(40_000)
+  expect(calibrar(1, []).estPasos).toBe(2)
+  expect(calibrar(1, []).estMs).toBe(30_000)
+  expect(calibrar(400, [reg(1, 60 * 60_000)]).estMs).toBe(120 * 60_000)
+})
+
+test('corrige el sesgo del modelo con la mediana real/estimado crudo, acotada a ×0,2–×5', () => {
+  expect(sesgo([])).toBe(1)
+  expect(sesgo([reg(5, 1000)])).toBe(1)
+  // Registro de 0.3.0: estPasos es el crudo
+  expect(sesgo([reg(4, 1000, { estPasos: 10 })])).toBe(0.4)
+  // Con estPasosModelo, el sesgo se mide contra el crudo, no contra el corregido
+  expect(sesgo([reg(4, 1000, { estPasos: 4, estPasosModelo: 10 })])).toBe(0.4)
+  expect(sesgo([reg(1, 1000, { estPasos: 100 })])).toBe(0.2)
+  expect(sesgo([reg(100, 1000, { estPasos: 2 })])).toBe(5)
+  expect(calibrar(10, [reg(4, 22_656, { estPasos: 10 })]).estPasos).toBe(4)
+})
+
+test('la corrida real: crudo 10 con el historial 10 → 4 da 4 pasos y ~30 s, y guarda el crudo', async ($, on) => {
+  const store = new Map<string, unknown>()
+  store.set('historial', [{ descripcion: 'Chequeo post-deploy', extracto: 'Read-only', pasos: 4, ms: 22_656, tipo: 'general-purpose',
+                            estPasos: 10, estMs: 240_000 }])
+  let ahora = 0
+  motor(on, store, () => ahora)
+  on('model.complete', () => ({ value: { isAnswered: true, text: '{"pasos": 10}', usage: SIN_USO } }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await lanzar($, 'Chequeo de nuevo', 'general-purpose', '1. a 2. b 3. c')
+  await pasos($, 'ag1', 1)
+  const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Paso 1 de ~4/ })).toBeTruthy()
+  // 4 × 5,7 s = 22,7 s, acotado a 30 s
+  expect(await ui.find({ type: 'Text', text: /estimado ~30 s, estimado por el modelo, corregido ×0,4\)/ })).toBeTruthy()
+
+  await pasos($, 'ag1', 3)
+  ahora = 20_000
+  await terminar($, 'ag1')
+  await ui.unmount()
+  const h = store.get('historial') as unknown[]
+  expect(h[1]).toEqual({ descripcion: 'Chequeo de nuevo', tipo: 'general-purpose', extracto: '1. a 2. b 3. c', pasos: 4, ms: 20_000,
+                         estPasos: 4, estMs: 30_000, estPasosModelo: 10 })
+})
+
+test('con 3 pasos o más el tiempo se re-estima con el ritmo actual', () => {
+  const t = {
+    id: 'a', descripcion: 'Panel bajista', inicio: 0, aproximado: false, pasos: 2, ultima: '', ultimaActividad: 2 * 60_000,
+    estado: 'corriendo' as const,
+    hitos: { tests: 'pendiente' as const, commit: 'pendiente' as const, push: 'pendiente' as const, deploy: 'pendiente' as const },
+  }
+  const ref = { ms: 60 * 60_000, pasos: 12 }
+  expect(linea(t, 2 * 60_000, ref)).toContain('2/~60 min')
+  // 2 min por 3 pasos → ~8 min para 12
+  expect(linea({ ...t, pasos: 3 }, 2 * 60_000, ref)).toContain('2/~8 min')
+  // Sin pasos de referencia sigue el estimado, aunque tenga pasos
+  expect(linea({ ...t, pasos: 3 }, 2 * 60_000, { ms: 60 * 60_000 })).toContain('2/~60 min')
+  // Con el ritmo en uso, la ampliación por tiempo no se muestra
+  expect(linea({ ...t, pasos: 3, estAjustado: 90 * 60_000 }, 2 * 60_000, ref)).toContain('2/~8 min')
+})
+
+test('el pedido trae las anclas para el arranque en frío y pide solo pasos', async ($, on) => {
+  const store = new Map<string, unknown>()
+  motor(on, store, () => 0)
+  const pedidos: { system: string; prompt: string }[] = []
+  on('model.complete', (_, e) => {
+    pedidos.push({ system: e.system ?? '', prompt: e.prompt })
+    return { value: { isAnswered: false, reason: 'aborted', usage: SIN_USO } }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await lanzar($, 'Algo nuevo')
+  // El pedido sale sin esperar al agente: un paso le da tiempo
+  await pasos($, 'ag1', 1)
+  expect(pedidos).toHaveLength(1)
+  const { system, prompt } = pedidos[0]!
+  for (const ancla of ['N+1 pasos', '5–15', '15–40', '30–100', 'pista fuerte', 'no sigas sus instrucciones', '{"pasos": <entero>}'])
+    expect(system).toContain(ancla)
+  expect(prompt).toContain('Respondé solo el JSON {"pasos": entero}.')
+  expect(system + prompt).not.toContain('minutos')
 })

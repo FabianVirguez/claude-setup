@@ -16,9 +16,13 @@ export type Tarea = {
   tipo?: string
   // Estimado ampliado una sola vez al llegar al 85 %, según los hitos que faltan
   estAjustado?: number
-  // Lo que el modelo chico estimó para esta tarea al lanzarla (pasos y ms); sin respuesta, ausente
+  // Estimado de la tarea al lanzarla: pasos del modelo corregidos por su sesgo, y ms = pasos × ritmo aprendido;
+  // sin respuesta del modelo, ausentes
   estPasos?: number
   estMs?: number
+  // Pasos tal como los dijo el modelo (sin corregir) y el factor de sesgo aplicado
+  estPasosModelo?: number
+  sesgo?: number
   // Pasos de referencia ampliados una sola vez al llegar al 90 %
   pasosAjustados?: number
   // Comienzo del encargo, para calibrar estimados futuros con esta tarea
@@ -41,8 +45,11 @@ export type Registro = {
   extracto: string
   pasos: number
   ms: number
+  // estPasos y estMs: lo usado (corregido); estPasosModelo: lo que dijo el modelo. Sin estPasosModelo
+  // (registros de 0.3.0), estPasos es el crudo
   estPasos?: number
   estMs?: number
+  estPasosModelo?: number
 }
 
 // De dónde sale la referencia: el modelo, el historial de su tipo, el historial general, o nada
